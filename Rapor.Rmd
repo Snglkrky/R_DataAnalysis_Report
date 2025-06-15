@@ -1,0 +1,759 @@
+---
+title: "ABD Ölüm Oranları'nın Köken ve Ölüm Sebebi Arasındaki İlişkinin İncelenmesi (1999-2019)"
+author: "Songül Karakaya"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    theme: journal
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Veri Yükleme ve Önişleme
+
+Bu rapor, ABD Hastalık Kontrol ve Korunma Merkezleri (CDC) tarafından sağlanan verilere dayanarak, 1999-2019 yılları arasındaki ölüm oranlarını analiz etmektedir. Analiz, farklı etnik kökenlere (`Origin`) ve ölüm nedenlerine (`Cause of death`) göre ölüm oranlarındaki eğilimleri ortaya koymayı amaçlamaktadır.
+
+https://www.cdc.gov/nchs/hus/topics/heart-disease-deaths.htm#definitions   SlctMort datasetin  Mort datasetine dönüştürülmesiyle oluşturulmuştur.
+
+Veri seti, her 100.000 kişi başına yaşa göre ayarlanmış ölüm oranlarını içermektedir.
+
+---
+
+
+## Kütüphanelerin Yüklenmesi
+
+Analize başlamadan önce, veri işleme, görselleştirme ve analiz için gerekli olan R kütüphaneleri yükleyelim.
+
+```{r KutuphaneYukleme, echo=TRUE}
+Sys.setlocale("LC_ALL", "en_US.UTF-8")
+
+# Gerekli kütüphaneler
+library(tidyverse)
+library(ggplot2)
+library(readxl)
+library(viridis) 
+library(ggrepel)
+library(gganimate)
+library(gifski)
+library(glue) 
+library(car)
+library(nortest)
+library(emmeans)
+library(rstatix) # Games-Howell testi için
+```
+
+---
+
+## Veri Yükleme
+
+
+```{r VeriYukleme, echo=TRUE}
+rawdata <- read_excel("C:/Users/msi/Desktop/GitHub_Projelerim/R_DataAnalysis_Report/Mort.xlsx")
+```
+
+### Veri Yapısının İncelenmesi
+
+`str()` fonksiyonu ile veri setinin yapısını, değişken türlerini ve ilk birkaç satırını görüntüleyelim.
+
+```{r VeriYapisi, echo=TRUE}
+str(rawdata)
+```
+**Yorum:** Veri seti 152 satır ve 23 sütundan oluşuyor. `Origin` ve `Cause of death` karakter (chr) tipinde, yıllar ise sayısal (dbl) tipte. Bu yapı, "geniş format" (wide format) olarak adlandırılır. Analiz için "uzun formata" (long format) çevirmek daha kullanışlı olacaktır.
+
+### Verinin İlk Gözlemleri
+
+`head()` fonksiyonu ile veri setinin ilk 6 satırına göz atıyoruz.
+
+```{r VeriIlkGozlemler, echo=TRUE}
+head(rawdata)
+```
+
+```{r EksikDegerKontrolu, echo=TRUE}
+anyNA(rawdata)
+```
+
+---
+
+## Veri Önişleme
+
+### Veriyi Uzun Formata Çevirme
+
+`pivot_longer()` fonksiyonu ile yıl sütunlarını tek bir `Year` sütununda ve ölüm oranlarını tek bir `Death` sütununda topluyoruz.
+
+```{r VeriUzunFormat, echo=TRUE}
+long_data <- rawdata %>%
+  pivot_longer(
+    cols = `1999`:`2019`,
+    names_to = "Year",
+    values_to = "Death"
+  )
+# Veri setindeki Death değişkeni, her 100.000 kişi için ölüm oranını ifade etmektedir.
+```
+
+### Değişkenleri Faktör Olarak Atama
+
+Kategorik değişkenleri (`Origin`, `Cause of death`, `Year`) analizlerde doğru kullanılabilmeleri için faktör (factor) tipine dönüştürüyoruz.
+
+```{r FaktorAtama, echo=TRUE}
+long_data <- long_data %>%
+  mutate(Origin = as.factor(Origin),
+         `Cause of death` = as.factor(`Cause of death`),
+         Year = as.factor(Year))
+```
+
+### Faktör Seviyelerini Türkçeleştirme
+
+Grafik ve tablolarda daha anlaşılır olması için `Origin` ve `Cause of death` değişkenlerinin İngilizce seviyelerini `fct_recode()` ile Türkçeleştiriyoruz.
+
+```{r FaktorTurkcelestirme, echo=TRUE}
+long_data <- long_data %>%
+  mutate(Origin = fct_recode(Origin,
+                             "Amerikan Yerlisi/Alaska Yerlisi ve Hispanik/Latino" = "American Indian or Alaska Native and Hispanic or Latino",
+                             "Amerikan Yerlisi/Alaska Yerlisi ancak Hispanik/Latino Değil" = "American Indian or Alaska Native but not Hispanic or Latino",
+                             "Asyalı/Pasifik Adalı ve Hispanik/Latino" = "Asian or Pacific Islander and Hispanic or Latino",
+                             "Asyalı/Pasifik Adalı ancak Hispanik/Latino Değil" = "Asian or Pacific Islander but not Hispanic or Latino",
+                             "Siyah/Afro-Amerikan ve Hispanik/Latino" = "Black or African American and Hispanic or Latino",
+                             "Siyah/Afro-Amerikan ancak Hispanik/Latino Değil" = "Black or African American but not Hispanic or Latino",
+                             "Beyaz ve Hispanik/Latino" = "White and Hispanic or Latino",
+                             "Beyaz ancak Hispanik/Latino Değil" = "White but not Hispanic or Latino"
+  ),`Cause of death` = fct_recode(`Cause of death`,
+                                 "Tüm Nedenler" = "All causes",
+                                 "Alzheimer" = "Alzheimer's disease",
+                                 "Serebrovasküler Hastalıklar" = "Cerebrovascular diseases",
+                                 "Kronik Karaciğer H. ve Siroz" = "Chronic liver disease and cirrhosis",
+                                 "Kronik Solunum Yolu Hastalıkları" = "Chronic lower respiratory diseases",
+                                 "Kolon, Rektum ve Anüs Kanserleri" = "Colon, rectum, and anus",
+                                 "Diyabet" = "Diabetes mellitus",
+                                 "Kalp Hastalıkları" = "Diseases of heart",
+                                 "Cinayet" = "Homicide",
+                                 "HIV" = "Human immunodeficiency virus (HIV) disease",
+                                 "Grip ve Zatürre" = "Influenza and pneumonia",
+                                 "İskemik Kalp Hastalığı" = "Ischemic heart disease",
+                                 "Kötü Huylu Tümörler" = "Malignant neoplasms",
+                                 "Trafik Kazaları" = "Motor vehicle-related injuries",
+                                 "Böbrek Hastalıkları" = "Nephritis, nephrotic syndrome and nephrosis",
+                                 "Zehirlenme" = "Poisoning",
+                                 "İntihar" = "Suicide",
+                                 "Trakea, Bronş ve Akciğer Kanserleri" = "Trachea, bronchus, and lung",
+                                 "Kasıtsız Yaralanmalar" = "Unintentional injuries"))
+```
+
+---
+
+# Keşifsel Veri Analizi
+
+Bu bölümde, işlenmiş veri setini daha derinlemesine inceleyerek temel istatistikleri ve dağılımları ortaya çıkaralım.
+
+### İşlenmiş Verinin Boyutu ve Yapısı
+
+```{r IslenmisVeriBoyut, echo=TRUE}
+dim(long_data)
+```
+**Yorum:** Veri setimiz artık 3192 gözlem ve 4 değişkenden oluşuyor.
+
+```{r IslenmisVeriYapi, echo=TRUE}
+str(long_data)
+```
+
+```{r IslenmisVeriHead, echo=TRUE}
+head(long_data)
+```
+
+### Faktör Seviyelerinin Kontrolü
+
+Faktör seviyelerini kontrol edelim.
+
+```{r FaktorSeviyeleri, echo=TRUE}
+# Etnik Köken Seviyeleri
+levels(long_data$Origin)
+
+# Ölüm Nedeni Seviyeleri
+levels(long_data$`Cause of death`)
+
+# Yıl Seviyeleri
+levels(long_data$Year)
+```
+
+### Ölüm Nedenlerine Göre Tanımlayıcı İstatistikler
+
+`tapply()` fonksiyonu ile her bir ölüm nedenine göre ölüm oranlarının (`Death`) özet istatistiklerini (minimum, medyan, ortalama, maksimum vb.) hesaplayalım.
+
+```{r TanimlayiciIstatistikler, echo=TRUE}
+tapply(long_data$Death, long_data$`Cause of death`, summary)
+```
+
+### Etnik Köken Bazında Toplam Ölüm Oranları
+
+`group_by()` ve `summarise()` fonksiyonları ile her etnik köken için 1999-2019 periyodundaki toplam ölüm oranlarını hesaplıyoruz.
+
+```{r Kokentoplamlari, echo=TRUE}
+origin_totals <- long_data %>%
+  group_by(Origin) %>%
+  summarise(Total_Death = sum(Death)) %>%
+  arrange(desc(Total_Death))
+origin_totals
+```
+**Yorum:** Tablo, "Siyah/Afro-Amerikan"'ların diğer gruplara oranla daha yüksek ölüm seviyelerine sahip olduğunu gösteriyor. 
+
+### Ölüm Nedeni Bazında Toplam Ölüm Oranları
+
+Benzer şekilde, her bir ölüm nedeni için toplam ölüm oranlarını hesaplayarak en yaygın ölüm nedenlerini sıralıyoruz.
+
+```{r NedenToplamlari, echo=TRUE}
+cause_totals <- long_data %>%
+  group_by(`Cause of death`) %>%
+  summarise(Total_Death = sum(Death)) %>%
+  arrange(desc(Total_Death))
+cause_totals
+```
+
+---
+
+# Görselleştirme
+
+## Yıllara Göre Genel Değişim
+
+### 1999 ve 2019 Yıllarındaki Ölüm Oranlarının Kıyaslanması
+```{r KiyaslamaGrafigi, echo=TRUE, fig.height=6, fig.width=12}
+kıyas_data <- long_data %>%
+	filter(`Cause of death` != "Tüm Nedenler") %>%
+	filter(Year %in% c("1999", "2019"))
+
+plot1 <- ggplot(kıyas_data, aes(x = reorder(`Cause of death`, Death), y = Death)) +
+	geom_col(fill = "steelblue") +
+	coord_flip() +
+	facet_wrap(~ Year) +
+	labs( title = "Ölüm Nedenleri Oranları: 1999 ve 2019 Karşılaştırması",
+		    x = "Ölüm Nedeni", y = "Oran (100.000 Kişide)") + 
+  theme_minimal()
+plot1
+```
+
+**Amaç ve Yorum:** Bu çubuk grafiği, 20 yıllık periyodun başlangıcı (1999) ve sonundaki (2019) ölüm nedenlerini doğrudan karşılaştırır. Alzheimer, Zehirlenme ve İntihar gibi nedenlerdeki artış ile HIV, Cinayet ve Kalp Hastalıkları'ndaki azalış ilk bakışta görülebilmektedir.
+
+### Ölüm Oranlarındaki Değişimin Dambıl Grafiği ile Gösterimi
+```{r DambilGrafigi, echo=TRUE, fig.height=8, fig.width=12}
+dambıl_data <- kıyas_data %>%
+	group_by(`Cause of death`, Year) %>%
+	summarise(Avg_Death = mean(Death, na.rm = TRUE), .groups = 'drop') %>%
+	pivot_wider(names_from = Year, values_from = Avg_Death, names_prefix = "year_")
+
+plot2 <- ggplot(dambıl_data, aes(y = reorder(`Cause of death`, year_1999))) +
+	geom_segment(aes(x = year_1999, xend = year_2019, yend = `Cause of death`),
+							 color = "grey", linewidth = 1.5, alpha = 0.7) +
+	geom_point(aes(x = year_1999, color = "1999"), size = 4) +
+	geom_point(aes(x = year_2019, color = "2019"), size = 4) +
+	scale_color_manual(name = "Yıl", values = c("1999" = "#f8766d", "2019" = "#00bfc4")) +
+	labs(title = "Ölüm Oranlarındaki Değişim (1999 ve 2019)",
+		   x = "Ölüm Oranı (100.000 Kişide)", y = "Ölüm Nedeni") + 
+  theme_minimal()
+plot2
+```
+**Amaç ve Yorum:** Dambıl grafiği, her bir ölüm nedeni için 20 yıllık değişimin yönünü ve büyüklüğünü gösterir. Mavi noktanın (2019) kırmızı noktadan (1999) sağda olması artışı, solda olması azalışı belirtir. Genel olarak hastalıklarda azalış görülürken Zehirlenme, Alzheimer ve Kasıtsız Yaralanmalarda artış söz konusudur. Böbrek, Karaciğer hastalıkları ve Cinayet kaynaklı ölüm oranları ise 21 yıl sonra neredeyse aynıdır.
+
+## Isı Haritaları ile Trend Analizi
+
+### Hastalıkların Yıllara Göre Göreceli Değişimi
+```{r HeatmapHastalik, echo=TRUE, fig.height=8, fig.width=12}
+# Veriyi hazırlama ve ölçeklendirme
+heatmap_data <- long_data %>%
+	filter(`Cause of death` != "Tüm Nedenler") %>%
+	group_by(Year, `Cause of death`) %>%
+	summarise(Avg_Death = mean(Death, na.rm = TRUE), .groups = 'drop') %>%
+	group_by(`Cause of death`) %>%
+	mutate( Scaled_Death = (Avg_Death - min(Avg_Death)) / (max(Avg_Death) - min(Avg_Death))) %>%
+	ungroup()
+
+plot3 <- ggplot(heatmap_data, aes(x = Year, y = `Cause of death`, fill = Scaled_Death)) +
+	geom_tile(color = "white", linewidth = 0.15) +
+	scale_fill_viridis(option = "H", name = "Göreceli Oran\n(0 = Min, 1 = Max)") +
+	labs(title = "Hastalıkların Kendi İçindeki Yıllık Değişimi",
+		   x = "Yıl", y = "Ölüm Nedeni") + 
+  theme_minimal() +
+	theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "bottom")
+plot3
+```
+**Amaç ve Yorum:** Bu ısı haritası, her bir ölüm nedenini kendi içinde değerlendirir. Renkler, bir hastalığın 20 yıllık periyottaki en düşük (koyu mavi) ve en yüksek (kırmızı) oranlı olduğu yılları gösterir. 
+
+### Kökenlerin Yıllara Göre Mutlak Ölüm Oranı Değişimi
+```{r HeatmapKokenMutlak, echo=TRUE, fig.height=5,  fig.width=10}
+heatmap_origin_rate <- long_data %>%
+	filter(`Cause of death` == "Tüm Nedenler")
+
+plot3.1 <- ggplot(heatmap_origin_rate, aes(x = Year, y = Origin, fill = Death)) +
+	geom_tile(color = "white", linewidth = 0.15) +
+	scale_fill_viridis(option = "H", name = "Mutlak Oran") +
+	labs(title = "Köken Gruplarının Toplam Ölüm Oranlarının Yıllık Değişimi",
+			 x = "Yıl", y = "Köken") + 
+  theme_minimal() +
+	theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "bottom")
+plot3.1
+```
+**Amaç ve Yorum:** Bu grafik, hangi köken grubunun genel olarak daha yüksek ölüm oranlarına sahip olduğunu (daha sıcak renkler) gösterir. "Siyah/Afro-Amerikan (Hispanik Değil)" grubunun sürekli olarak diğer gruplardan daha yüksek ölüm oranlarına sahip olduğu net bir şekilde görülmektedir. Diğer gruplarda Hispanik/Latino olması köken seyrini değiştirmezken Amerikan/Alaska yerlisi için Hispanik/Latino oluşunun fark yarattığını görebiliriz.
+(Ben bu heatmapi zihnimde 4 parçaya bölüp kırmızıdan maviye bir geçiş olarak arka arkaya diziyorum.)
+
+### Kökenlerin Kendi İçindeki Yıllık Değişimi (Ölçeklendirilmiş)
+```{r HeatmapKokenOlcekli, echo=TRUE, fig.height=5, fig.width=10}
+# Veriyi hazırlama ve ölçeklendirme
+heatmap_data_scaled <- long_data %>%
+	filter(`Cause of death` == "Tüm Nedenler") %>%
+	group_by(Origin) %>% 
+  mutate(Scaled_Death = (Death - min(Death)) / (max(Death) - min(Death))) %>%
+	ungroup()
+
+plot3.2 <- ggplot(heatmap_data_scaled, aes(x = Year, y = Origin, fill = Scaled_Death)) +
+	geom_tile(color = "white", linewidth = 0.2) +
+	scale_fill_viridis(option = "H", name = "Göreceli Oran\n(0=En Düşük, 1=En Yüksek)") +
+	labs(title = "Köken Gruplarının Kendi İçindeki Yıllık Değişimi",
+		   subtitle = "Her satır, bir kökenin kendi 'Tüm Nedenler' ölüm oranı verilerine göre renklendirilmiştir",
+		   x = "Yıl",  y = "Köken (Origin)"	) +  
+  theme_minimal() +
+	theme( axis.text.x = element_text(angle = 45, hjust = 1),  legend.position = "bottom")
+plot3.2
+```
+**Amaç ve Yorum:** Bu ölçeklendirilmiş ısı haritası, her köken grubunu kendi içinde analiz eder. Çoğu grubun zamanla daha soğuk renklere kayması, genel ölüm oranlarında bir düşüş eğilimi olduğunu gösterir. Ancak bu düşüşün hızı gruplar arasında farklılık gösterir (özellikle Amerikan/Alaska yerlisi olup Hispanik/Latino kökenli olmayan grupta).
+
+## Çizgi Grafikleri ile Köken ve Hastalık İlişkisi
+
+### Kalp Hastalıkları Ölüm Oranlarının Kökenlere Göre Trendi
+```{r CizgiKalp, echo=TRUE, fig.height=7, fig.width=12}
+kalp_data <- long_data %>%
+	filter(`Cause of death` == "Kalp Hastalıkları")
+
+plot4 <- ggplot(kalp_data, aes(x = as.numeric(as.character(Year)), y = Death, color = Origin)) +
+	geom_line(linewidth = 1) + geom_point(size = 2, alpha = 0.8) +
+	labs( title = "Kalp Hastalıkları Ölüm Oranlarındaki Trendler (1999-2019)",
+		    subtitle = "Farklı Kökenlere Göre Karşılaştırma",
+		    x = "Yıl",  y = "Ölüm Oranı (100.000 Kişide)",
+		    color = "Köken") + 
+  theme_minimal() +
+	theme(legend.position = "bottom", plot.title = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2))
+plot4
+```
+**Amaç ve Yorum:** En yaygın ölüm nedenlerinden biri olan kalp hastalıklarının kökenlere göre seyrini inceleyelim. "Siyah/Afro-Amerikan (Hispanik Değil)" grubunun diğer gruplara göre belirgin şekilde daha yüksek ölüm oranlarına sahip olduğu ve tüm gruplarda zamanla genel bir düşüş trendi olduğu net bir şekilde görülmektedir. Irklara göre kökenlerin paralel seyrettiği söylenebilir.
+
+### Zehirlenme Ölüm Oranlarının Kökenlere Göre Trendi
+```{r CizgiZehirlenme, echo=TRUE, fig.height=7, fig.width=12}
+poisoning_data <- long_data %>%
+	filter(`Cause of death` == "Zehirlenme")
+
+# Grafik
+plot4.1 <- ggplot(poisoning_data, aes(x = as.numeric(as.character(Year)), y = Death, color = Origin)) +
+	geom_line(linewidth = 1) + geom_point(size = 2, alpha = 0.8) +
+	labs( title = "Zehirlenme Ölüm Oranlarındaki Trendler (1999-2019)",
+				subtitle = "Farklı Kökenlere Göre Karşılaştırma",
+				x = "Yıl",  y = "Ölüm Oranı (100.000 Kişide)",
+				color = "Köken") + 
+  theme_minimal() +
+	theme( legend.position = "bottom", plot.title = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2))
+plot4.1
+```
+**Amaç ve Yorum:** Bu grafik, zehirlenmeye bağlı ölümlerin özellikle 2010'dan sonra tüm gruplarda, fakat en çok "Beyaz (Hispanik Değil)" ve "Amerikan Yerlisi/Alaska Yerlisi (Hispanik Değil)" gruplarında dramatik bir şekilde arttığını ortaya koymaktadır. Bu durum, ABD'deki opioid krizi gibi halk sağlığı sorunlarıyla ilişkili olabilir. (reçete edilen opioid sınıfı ilaçların aşırı kullanımı)
+
+### Toplam Ölüm Oranlarının Kökenlere Göre Trendi
+```{r CizgiTumNedenler, echo=TRUE, fig.height=7, fig.width=12}
+all_causes_data <- long_data %>%
+	filter(`Cause of death` == "Tüm Nedenler")
+
+plot4.2 <- ggplot(all_causes_data, aes(x = as.numeric(as.character(Year)), y = Death, color = Origin)) +
+	geom_line(linewidth = 1) + geom_point(size = 2, alpha = 0.8) +
+	labs( title = "Toplam Ölüm Oranlarının Kökenlere Göre Trendi (1999-2019)",
+				subtitle = "Farklı Kökenlere Göre Karşılaştırma",
+				x = "Yıl",  y = "Ölüm Oranı (100.000 Kişide)",
+				color = "Köken") + 
+  theme_minimal() +
+	theme( legend.position = "bottom", plot.title = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2))
+plot4.2
+```
+**Amaç ve Yorum:** Bu genel bakış grafiği, gruplar arasındaki sağlık eşitsizliklerini özetler. "Siyah/Afro-Amerikan (Hispanik Değil)" grubunun en yüksek ölüm oranına sahip olduğu, "Asyalı/Pasifik Adalı" grubunun ise en düşük orana sahip olduğu görülmektedir. Gruplar arasındaki makas zamanla bir miktar daralsa da, belirgin farklılıklar varlığını sürdürmektedir.
+
+# Hareketli Veri Görselleştirme
+
+## Avantajlı ve Dezavantajlı Grupların Hareketli Sıralaması
+
+```{r HareketliSiralamaGrafigi, echo=TRUE, fig.width=14, fig.height=8}
+# --- VERİ HAZIRLIĞI ---
+
+#  Avantajlı ve Dezavantajlı Grupların Yığılmış ve Hareketli Sıralama Grafiği 
+
+groups_to_stack <- c("Siyah/Afro-Amerikan ancak Hispanik/Latino Değil", "Asyalı/Pasifik Adalı ve Hispanik/Latino")
+
+# Veriyi bu iki grup için hazırlayalım ve sıralama için toplamları hesaplama:
+stacked_bcr_data <- long_data %>%
+	filter(Origin %in% groups_to_stack) %>%                     # İki grubu da alıyor
+	filter(`Cause of death` != "Tüm Nedenler") %>%              # Hastalıkları ayrı ayrı görmek için tüm nedenler seviyesini çıkarıyor
+	pivot_wider(names_from = Origin, values_from = Death) %>%  	# Veriyi, sütunların köken grupları olacak şekilde geniş formata çeviriyor
+	rename(death_siyah = `Siyah/Afro-Amerikan ancak Hispanik/Latino Değil`, 	# R için geçerli sütun adları atıyor
+		     death_asyali = `Asyalı/Pasifik Adalı ve Hispanik/Latino`) %>%
+	replace_na(list(death_siyah = 0, death_asyali = 0)) %>%    	# Eksik değerleri (bir grup için veri olmayan yıllar) 0 ile dolduruyor
+	mutate(Total_Death = death_siyah + death_asyali) %>%        # Sıralama için toplam ölüm oranını hesaplayalım
+	group_by(Year) %>%                                          # Her yıl içinde toplam orana göre sıralama yapalım
+	mutate(rank = min_rank(-Total_Death) * 1) %>%
+	filter(rank <= 10) %>%                                    	# Sadece ilk 10 hastalık
+	ungroup() %>%                                              	
+	pivot_longer( cols = c(death_siyah, death_asyali),          # ggplot ile yığılmış grafik çizmek için veriyi tekrar uzun formata çeviriyor
+		names_to = "Origin",	values_to = "Death"	) %>%
+	mutate(Origin = case_when(                                  # Orijinal köken isimlerini geri yüklüyor
+		Origin == "death_siyah" ~ "Siyah/Afro-Amerikan ancak Hispanik/Latino Değil",
+		Origin == "death_asyali" ~ "Asyalı/Pasifik Adalı ve Hispanik/Latino",
+		TRUE ~ Origin         )) %>%                             	# Yığılma sırasını kontrol etmek için faktör seviyelerini belirliyor
+	mutate(Origin = fct_relevel(Origin, "Asyalı/Pasifik Adalı ve Hispanik/Latino"))
+
+stacked_bcr_data$Year <- as.numeric(as.character(stacked_bcr_data$Year)) # Yıl'ı animasyon için sayısal yapıyor
+
+#  Yığılmış (stacked) ve hareketli grafik
+anim_stacked_race <- ggplot(stacked_bcr_data, 	aes(x = rank, y = Death, fill = Origin)) + 
+# Temel grafik katmanını kurar: x ekseninde sıralama, y'de ölüm oranı, renk dolgusu kökene göre.
+	
+	
+	#--- GRAFİK ÖĞELERİ (GEOM'LAR) ---
+	
+	geom_col(position = "stack", width = 0.7, alpha = 0.9) +   # Yığılmış çubukları çizer. 'position="stack"' iki grubun değerini üst üste ekler. 'width' çubukları inceltir.
+	
+	geom_text(   # Etiket 1: Az olan grubun (Asyalı...) değerini kendi barının içine yazar.
+		data = . %>% filter(Origin == "Asyalı/Pasifik Adalı ve Hispanik/Latino"),
+		aes(label = glue('{round(Death, 0)}')),   # Etiket olarak yuvarlanmış ölüm oranını alır.
+		position = position_stack(vjust = 0.5),   # Etiketi, yığılmış çubuğun KENDİ segmentinin dikey olarak ortasına yerleştirir.
+		color = "white", fontface = "bold", size = 4) +
+	
+	geom_text(    # Etiket 2: Toplam değeri ("Siyah..." grubunun verisi üzerinden) barın sonuna yazar.
+		data = . %>% filter(Origin == "Siyah/Afro-Amerikan ancak Hispanik/Latino Değil"),
+		aes(y = Total_Death, label = glue(' {round(Total_Death, 0)}')),   # Y konumu olarak toplam değeri alır ve etiketi çubuğun sağına yerleştirir.
+		hjust = 0, size = 5) +                                            # Metni yatay olarak sola hizalar (sayı çubuğun dışında başlar).
+		
+	
+	geom_text(    # Etiket 3: Hastalık adını ("Siyah..." grubunun verisi üzerinden) barın köküne yazar.
+		data = . %>% filter(Origin == "Siyah/Afro-Amerikan ancak Hispanik/Latino Değil"),
+		aes(group = `Cause of death`, y = 0, label = `Cause of death`),   # Y konumunu 0 olarak belirleyerek metni en sola (köküne) yerleştirir.
+		hjust = 1, vjust = 0.2, size = 5, color = "black") +              # Metni sağa hizalayarak çubuğun içinde kalmasını sağlar.
+	
+	#--- EKSEN ve TEMA AYARLARI ---
+	
+	coord_flip(clip = "off", expand = FALSE) + # Grafiğin eksenlerini değiştirir (x-y), böylece çubuklar yatay olur.
+	scale_x_reverse() +      # X eksenini (artık dikey olan sıralamayı) ters çevirir, böylece 1. sıra en üstte olur.
+	
+	theme_minimal(base_size = 14) + # Sade, arka planı olmayan bir tema seçer.
+	theme(
+		panel.grid = element_blank(),  # Arka plandaki kılavuz çizgilerini kaldırır.
+		axis.title = element_blank(),  # Eksen başlıklarını ("rank", "Death") kaldırır.
+		axis.text.x = element_blank(), # Yatay eksendeki sayı etiketlerini (oranlar) kaldırır.
+		axis.text.y = element_blank(), # Dikey eksendeki sayı etiketlerini (sıralama) kaldırır.
+		plot.title = element_text(size = 22, face = "bold", hjust = 0.5),    # Ana başlığın stilini ayarlar.
+		plot.subtitle = element_text(size = 18, hjust = 0.5),                # Alt başlığın stilini ayarlar.
+		plot.caption = element_text(size = 12, hjust = 1, color = "grey40"), # En alttaki kaynak yazısının stilini ayarlar.
+		legend.position = "bottom",                                          # Renk lejantını grafiğin altına yerleştirir.
+		plot.margin = margin(1, 1, 1, 9, "cm")) + # Grafiğin kenar boşluklarını ayarlar (sol boşluk isimlerin sığması için fazla).
+	
+	#--- ANİMASYON KATMANI ---
+	
+	labs(
+		title = "İki Köken Grubunun Hastalık Sıralaması",
+		subtitle = "Yıl: {closest_state}",                                             # Alt başlığı dinamik yapar; o anki 'state' olan yılı gösterir.
+		caption = "Çubuklar, iki grubun toplam ölüm oranını gösterir.",
+		fill = "Köken Grubu:") +                                                       # Renk lejantının başlığını değiştirir.
+	transition_states(Year, transition_length = 2, state_length = 2, wrap = FALSE) + # Animasyonun ana motoru: Yıl'a göre durumlar arası geçiş yapar.
+	ease_aes('cubic-in-out') +                                                       # Geçişlerin daha yumuşak ve estetik olmasını sağlar.
+	view_follow(fixed_x = TRUE)             # Dikey eksenin (sıralama) sabit kalmasını, yatay eksenin (oranlar) ise verilere göre değişmesini sağlar.
+
+
+# Animasyonu render etmek için R Markdown'da sadece nesnenin adını çağırmak yeterlidir.
+# GIF olarak manuel kaydetmek için:
+# animate(anim_stacked_race, nframes = 250, fps = 10, width = 1200, height = 800, renderer = gifski_renderer("anim.gif"))
+anim_stacked_race
+```
+
+**Yorum:** Animasyon, iki grup arasındaki büyük farkı çarpıcı bir şekilde göstermektedir. Çubukların büyük çoğunluğunu (ve dolayısıyla toplam ölüm oranını) "Siyah/Afro-Amerikan" grubunun oluşturduğu görülmektedir. Kalp Hastalıkları ve Kötü Huylu Tümörler gibi nedenler sürekli olarak en üst sıralarda yer alırken, yıllar içinde Zehirlenme gibi yeni tehditlerin sıralamada nasıl yükseldiğini de gözlemleyebiliyoruz. Turuncu kısım yalnızca "Asyalı/Pasifik Adalı ve Hispanik/Latino" kökeni gösterirken (beyaz sayılar) mavi ve turuncu barların toplam uzunluğu (siyah sayılar) "Siyah/Afro-Amerikan ancak Hispanik/Latino Değil" kökenini işaret eder.
+										 
+
+---
+
+## Spesifik Hastalık Trendlerinin Canlandırılması
+
+```{r HastalikAnimasyonlari, echo=TRUE, fig.width=12, fig.height=6}
+hiv_data_anim <- long_data %>%
+	filter(`Cause of death` == "HIV") 
+# Yıl değişkenini animasyonun doğru çalışması için sayısal formata çevirelim.
+hiv_data_anim$Year <- as.numeric(as.character(hiv_data_anim$Year))
+
+
+# Hareketli Grafiği Oluşturma
+anim_line_hiv <- ggplot(hiv_data_anim, aes(x = Year, y = Death, color = Origin)) + # Temel grafik katmanını kurar: x=Yıl, y=Ölüm Oranı, renk=Köken.
+	
+	#--- GRAFİK ÖĞELERİ (GEOM'LAR) ---
+	
+	geom_line(linewidth = 1.5) +    # Her bir köken grubu için trendi gösteren çizgileri çizer.
+	geom_point(size = 3) +          # Çizgilerin üzerindeki her bir yıla ait veri noktalarını ekler.
+	geom_text(aes(label = round(Death, 1)), vjust = -1.5, fontface = "bold") + # Her noktanın üzerine, yuvarlanmış sayısal değerini yazar.
+	
+	#--- EKSEN ve TEMA AYARLARI ---
+	
+	labs( # Grafiğin başlıklarını ve etiketlerini belirler.
+		title = "HIV Hastalığı Ölüm Oranlarındaki Trend (1999-2019)",
+		subtitle = "Yıl: {frame_along}",     # Alt başlığı dinamik yapar; o anki yılı gösterir.
+		x = "Yıl",
+		y = "Ölüm Oranı (100.000 Kişide)",
+		color = "Köken"                      # Renk lejantının başlığını ayarlar.
+	) +
+	theme_minimal(base_size = 14) +        # Sade ve modern bir tema seçer.
+	theme(
+		legend.position = "top",             # Lejantı grafiğin üstüne konumlandırır.
+		plot.title = element_text(face = "bold", size = 20), # Ana başlığın stilini ayarlar.
+		plot.subtitle = element_text(size = 16) # Alt başlığın stilini ayarlar.
+	) +
+	
+	#--- ANİMASYON KATMANI ---
+	
+	transition_reveal(Year) # Animasyonun ana motoru: Grafiğin Yıl değişkeni boyunca "çizilerek" ortaya çıkmasını sağlar.
+
+# animate(
+# 	anim_line_hiv,                 # Canlandırılacak ggplot animasyon nesnesi.
+# 	nframes = 200,                 # Animasyonun toplam kare sayısı (süresini etkiler).
+# 	fps = 10,                      # Saniyedeki kare sayısı (hızını etkiler).
+# 	width = 1000,                  # Çıktı olarak alınacak GIF'in piksel cinsinden genişliği.
+# 	height = 750,                  # Çıktı olarak alınacak GIF'in piksel cinsinden yüksekliği.
+# 	renderer = gifski_renderer())  
+
+anim_line_hiv
+```
+
+
+```{r Alzheimer, echo=TRUE, fig.width=12, fig.height=6}
+#  Alzheimer Trendlerinin Canlandırılması 
+
+alzheimer_data_anim <- long_data %>%
+	filter(`Cause of death` == "Alzheimer")
+alzheimer_data_anim$Year <- as.numeric(as.character(alzheimer_data_anim$Year))
+
+# Hareketli Grafiği Oluşturma
+anim_line_alzheimer <- ggplot(alzheimer_data_anim, aes(x = Year, y = Death, color = Origin)) + 
+
+	#--- GRAFİK ÖĞELERİ (GEOM'LAR) ---
+	geom_line(linewidth = 1.5) + 
+	geom_point(size = 3) + 
+	geom_text(aes(label = round(Death, 1)), vjust = -1.5, fontface = "bold") + 
+	
+	#--- EKSEN ve TEMA AYARLARI ---
+	labs( 
+		title = "Alzheimer Hastalığı Ölüm Oranlarındaki Trend (1999-2019)",
+		subtitle = "Yıl: {frame_along}",
+		x = "Yıl",	y = "Ölüm Oranı (100.000 Kişide)",
+		color = "Köken" ) +
+	theme_minimal(base_size = 14) + 
+	theme(
+		legend.position = "top", 
+		plot.title = element_text(face = "bold", size = 20), 
+		plot.subtitle = element_text(size = 16) ) +
+	
+	#--- ANİMASYON KATMANI ---
+	transition_reveal(Year) 
+
+anim_line_alzheimer
+```
+**Yorum:** Bu iki animasyon, ABD halk sağlığındaki iki zıt öyküyü anlatmaktadır.
+
+ **HIV:** Bu animasyon, modern tıbbın ve hedefe yönelik halk sağlığı kampanyalarının en büyük başarılarından birini göstermektedir. 2000'lerin başlarında özellikle Siyah/Afro-Amerikan grup için büyük bir kriz olan HIV, etkili antiretroviral tedavilerin yaygınlaşmasıyla tüm gruplarda dramatik bir şekilde azalmıştır. Ancak bu başarı öyküsünün içinde bile, başlangıçtaki orantısız yük ve gruplar arasında varlığını sürdüren küçük farklar, sağlık eşitsizliklerinin ne kadar kalıcı olabildiğini göstermektedir.
+ 
+**Alzheimer:** Tam tersi bir tablo çizen bu animasyon, tüm etnik grupları etkileyen, durdurulamaz bir artışı gözler önüne sermektedir. Nüfusun yaşlanmasıyla birlikte Alzheimer, 21. yüzyılın en önemli halk sağlığı sorunlarından biri haline gelmiştir. Artışın evrensel olması, bu hastalığın biyolojik ve demografik temellerine işaret ederken, gruplar arasındaki seviye farklılıkları (örneğin Beyaz gruptaki daha yüksek oranlar) genetik ve çevresel risk faktörlerinin karmaşık etkileşimini düşündürmektedir.
+
+## Kökenlerin ve Hastalıklarının Sıralaması (Bar Chart Race)
+
+```{r Yarislari, echo=TRUE, fig.width=12, fig.height=8}
+# Kökenlerin Yarışı
+origin_race_data <- long_data %>% filter(`Cause of death` == "Tüm Nedenler") %>% group_by(Year) %>%
+	mutate(rank = min_rank(-Death) * 1, Value_lbl = paste0(" ", round(Death))) %>% filter(rank <= 8)
+origin_race_data$Year <- as.numeric(as.character(origin_race_data$Year))
+anim_origin_race <- ggplot(origin_race_data, aes(rank, group = Origin, fill = as.factor(Origin))) +
+	geom_tile(aes(y = Death/2, height = Death, width = 0.9), alpha = 0.8) +
+	geom_text(aes(y = 0, label = paste(Origin, " ")), vjust = 0.2, hjust = 1, size = 5) +
+	geom_text(aes(y = Death, label = Value_lbl, hjust = 0), size = 5) +
+	coord_flip(clip = "off", expand = FALSE) + scale_y_continuous(labels = scales::comma) + scale_x_reverse() +
+	guides(color = FALSE, fill = FALSE) + theme_minimal() +
+	theme(panel.grid = element_blank(), axis.text.y = element_blank(), axis.text.x = element_blank(), axis.title = element_blank(),
+		  plot.margin = margin(1, 4, 1, 10, "cm"), plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
+		  plot.subtitle = element_text(size = 18, hjust = 0.5), plot.caption = element_text(size = 10, hjust = 1, color = "grey40")) +
+	labs(title = "Köken Gruplarının Genel Ölüm Oranı Sıralaması", subtitle = "Yıl: {as.integer(frame_time)}", caption = "Veri Kaynağı: CDC") +
+	transition_time(Year) + ease_aes('cubic-in-out')
+anim_origin_race
+```
+**Kökenlerin Sıralanışı:** Bu animasyon, ABD'deki sağlık eşitsizliklerinin ne kadar kemikleşmiş olduğunu göstermektedir. "Siyah/Afro-Amerikan" grup, 21 yıllık periyodun tamamında en yüksek genel ölüm oranıyla liderliğini korurken, "Asyalı/Pasifik Adalı" gruplar ise istikrarlı bir şekilde en altta yer almaktadır. Sıralamalardaki bu hareketsizlik, gruplar arasındaki sağlık farklarını kapatmaya yönelik çabaların ne kadar yetersiz kaldığını ima etmektedir.
+
+
+```{r beyaz, echo=TRUE, fig.width=12, fig.height=8}
+
+# Tek Köken Grubu İçin Hastalık Sıralaması
+bcr_single_origin_data <- long_data %>%
+	filter(Origin == "Beyaz ancak Hispanik/Latino Değil") %>%
+	filter(`Cause of death` != "Tüm Nedenler") %>%
+	group_by(Year) %>%
+	mutate(rank = min_rank(-Death) * 1, Value_lbl = paste0(" ", round(Death))) %>%
+	filter(rank <= 10) %>% ungroup()
+bcr_single_origin_data$Year <- as.numeric(as.character(bcr_single_origin_data$Year))
+anim_single_origin_race <- ggplot(bcr_single_origin_data, aes(rank, group = `Cause of death`, fill = as.factor(`Cause of death`))) +
+	geom_tile(aes(y = Death/2, height = Death, width = 0.9), alpha = 0.8) +
+	geom_text(aes(y = 0, label = paste(`Cause of death`, " ")), vjust = 0.2, hjust = 1, size = 5) +
+	geom_text(aes(y = Death, label = Value_lbl, hjust = 0), size = 5) +
+	coord_flip(clip = "off", expand = FALSE) + scale_x_reverse() + guides(color = FALSE, fill = FALSE) +
+	theme_minimal() + theme(panel.grid = element_blank(), axis.text.y = element_blank(), axis.text.x = element_blank(),
+		  axis.title = element_blank(), plot.margin = margin(1, 4, 1, 6, "cm"),
+		  plot.title = element_text(size = 22, face = "bold", hjust = 0.5), plot.subtitle = element_text(size = 18, hjust = 0.5),
+		  plot.caption = element_text(size = 12, hjust = 1, color = "grey40")) +
+	labs(title = "Beyaz (Hispanik Değil) Grubunda En Ölümcül Hastalıklar", subtitle = "Yıl: {as.integer(frame_time)}", caption = "Veri Kaynağı: CDC") +
+	transition_time(Year) + ease_aes('cubic-in-out')
+anim_single_origin_race
+```
+
+**Hastalıkların Sıralanışı (Beyaz Grup için):** Bu animasyon, en büyük nüfus grubundaki önceliklerin zamanla nasıl değiştiğini gösterir. "Kalp Hastalıkları" ve "Kötü Huylu Tümörler"in ilk iki sıradaki yerini koruması, bu kronik hastalıkların önemini vurgulamaktadır. Ancak en dikkat çekici hikaye, "Zehirlenme"nin (büyük ölçüde opioid kaynaklı) yaklaşık 2010 yılından itibaren hızla yükselerek "Serebrovasküler Hastalıklar" gibi geleneksel büyük nedenleri geride bırakmasıdır. Bu, yeni ve ani halk sağlığı krizlerinin toplumu ne kadar hızlı bir şekilde yeniden şekillendirebileceğinin canlı bir örneğidir.
+
+---
+
+# Korelasyon Analizi
+
+Bu bölümde, değişkenler arasındaki ilişkileri daha derinlemesine anlamak için korelasyon analizleri yapacağız. Korelasyon, iki değişkenin birlikte ne kadar güçlü bir şekilde hareket ettiğini ölçer. Isı haritaları, bu ilişkileri görselleştirmek için etkili bir yöntemdir.
+
+## Hastalıkların Kökenler İçindeki Korelasyonu
+
+Bu analiz, belirli bir etnik köken grubu içinde, farklı ölüm nedenlerinin yıllar içindeki trendlerinin birbirine ne kadar benzediğini inceler. Örneğin, bir grupta Alzheimer artarken, Kalp Hastalıkları azalıyor mu (negatif korelasyon) yoksa o da mı artıyor (pozitif korelasyon)?
+
+```{r KorelasyonHastalik, echo=TRUE, fig.width=12, fig.height=10}
+# Veriyi, her bir köken için hastalıkların sütun olduğu geniş formata getirme
+correlation_data_diseases <- long_data %>%
+  filter(!`Cause of death` %in% c("Tüm Nedenler", "Kasıtsız Yaralanmalar")) %>%
+  pivot_wider(names_from = `Cause of death`, values_from = Death)
+
+# Her bir köken grubu için korelasyon matrisini hesaplayıp çizim için hazırlama
+disease_corr_by_origin <- correlation_data_diseases %>%
+  group_by(Origin) %>%
+  summarise(correlations = list(cor(select(cur_data(), -Year), use = "pairwise.complete.obs") %>% 
+                                  as.data.frame() %>%
+                                  rownames_to_column("Var1") %>%
+                                  pivot_longer(-Var1, names_to = "Var2", values_to = "value")), .groups = 'drop') %>%
+  unnest(correlations)
+
+# Korelasyon ısı haritasını çizme
+ggplot(disease_corr_by_origin, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white",
+                       midpoint = 0, limit = c(-1,1), space = "Lab",
+                       name="Korelasyon") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, size = 8, hjust = 1)) +
+  coord_fixed() +
+  facet_wrap(~ Origin, ncol = 4) +
+  labs(title = "Her Köken Grubu İçin Ölüm Nedenlerinin Yıllara Göre Korelasyonu",
+       x = "", y = "")
+```
+**Yorum:** Bu grafik, her bir köken grubu için ayrı bir korelasyon matrisi gösterir. **Kırmızı kareler** pozitif korelasyonu (yani iki hastalığın trendi birlikte artar veya azalır), **mavi kareler** negatif korelasyonu (biri artarken diğeri azalır) ve **beyaz kareler** ise zayıf bir ilişkiyi belirtir. Örneğin, birçok grupta "Zehirlenme" ve "İntihar" arasında pozitif bir korelasyon görülmesi, bu iki ölüm nedeninin benzer zamanlarda artış gösterdiğini düşündürebilir. "İskemik Kalp Hastalığı"nın birçok hastalıkla negatif korelasyon göstermesi, bu hastalıktaki azalma trendinin diğer birçok hastalıktaki artışla aynı döneme denk geldiğini gösterir.
+
+
+## Kökenlerin Hastalıklar İçindeki Korelasyonu
+
+Bu analiz ise tam tersi bir soruya odaklanır: Belirli bir ölüm nedeni için, farklı etnik köken gruplarının yıllar içindeki trendleri birbirine ne kadar benziyor? Yani, bir hastalık bir grupta artarken diğerlerinde de artıyor mu?
+
+```{r KorelasyonKoken, echo=TRUE, fig.width=14, fig.height=12}
+# Veriyi, her bir hastalık için kökenlerin sütun olduğu geniş formata getirme
+correlation_data_origins <- long_data %>%
+  filter(`Cause of death` != "Tüm Nedenler") %>%
+  pivot_wider(names_from = `Origin`, values_from = Death)
+
+# Her bir hastalık için korelasyon matrisini hesaplayıp çizim için hazırlama
+origin_corr_by_disease <- correlation_data_origins %>%
+  group_by(`Cause of death`) %>%
+  summarise(correlations = list(cor(select(cur_data(), -Year), use = "pairwise.complete.obs") %>% 
+                                  as.data.frame() %>%
+                                  rownames_to_column("Var1") %>%
+                                  pivot_longer(-Var1, names_to = "Var2", values_to = "value")), .groups = 'drop') %>%
+  unnest(correlations)
+
+# Korelasyon ısı haritasını çizme
+ggplot(origin_corr_by_disease, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white",
+                       midpoint = 0, limit = c(-1,1), space = "Lab",
+                       name="Korelasyon") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, size = 7, hjust = 1),
+        axis.text.y = element_text(size = 7)) +
+  coord_fixed() +
+  facet_wrap(~ `Cause of death`, ncol = 5) +
+  labs(title = "Her Ölüm Nedeni İçin Köken Gruplarının Yıllara Göre Korelasyonu",
+       x = "", y = "")
+```
+**Yorum:** Bu grafik, her bir ölüm nedeni için farklı köken gruplarının trendlerinin ne kadar benzer olduğunu gösterir. **Kalp Hastalıkları, İskemik Kalp Hastalığı, Kanserler** gibi birçok kronik hastalıkta matrisin genel olarak **kırmızı** olması, bu hastalıklardaki azalma veya artma trendlerinin tüm köken grupları için paralel seyrettiğini gösterir. Yani bu hastalıklardaki genel eğilimler (örneğin tedavideki gelişmeler sayesinde azalma) tüm grupları benzer şekilde etkilemiştir. Buna karşılık, **Cinayet** veya **HIV** gibi nedenlerde daha az homojen bir yapı olması, bu olayların farklı grupları farklı zamanlarda ve farklı şekillerde etkilediğini düşündürmektedir.
+
+---
+
+# İstatistiksel Analiz: ANOVA
+
+Görsel ve korelasyon analizleri gruplar arasında farklar olduğunu gösterse de, bu farkların istatistiksel olarak anlamlı olup olmadığını, yani tesadüften kaynaklanıp kaynaklanmadığını test etmemiz gerekir.
+
+
+**Varyans Analizi (ANOVA)**, iki veya daha fazla grubun ortalamaları arasında istatistiksel olarak anlamlı bir fark olup olmadığını test etmek için kullanılan bir yöntemdir. Bu analizde, her bir ölüm nedeni için, 8 farklı etnik köken grubunun ortalama ölüm oranları (`Death`) arasında anlamlı bir fark olup olmadığını test edeceğiz.
+
+```{r ANOVAcalistirma, echo=TRUE, results='asis'}
+# --- 1. VERİ HAZIRLIĞI ---
+anova_input_data <- long_data %>%
+	filter(!(`Cause of death` %in% c("Tüm Nedenler", "Kasıtsız Yaralanmalar", "Kötü Huylu Tümörler")))
+# --- 2. ANOVA FONKSİYONUNU TANIMLAMA ---
+run_single_disease_anova <- function(disease_name, data) {
+	disease_data <- data %>% filter(`Cause of death` == disease_name)
+	levene_p <- leveneTest(Death ~ Origin, data = disease_data)$`Pr(>F)`[1]
+	if (levene_p >= 0.05) {
+		anova_test <- aov(Death ~ Origin, data = disease_data)
+		anova_p <- summary(anova_test)[[1]]$`Pr(>F)`[1]
+		test_type <- "Standart ANOVA"
+	} else {
+		anova_test <- oneway.test(Death ~ Origin, data = disease_data, var.equal = FALSE)
+		anova_p <- anova_test$p.value
+		test_type <- "Welch's ANOVA"
+	}
+	significant_pairs <- "Genel fark yok (p >= 0.05)" # Varsayılan değer
+	if (anova_p < 0.05) {
+		if (levene_p >= 0.05) {
+			post_hoc_res <- tukey_hsd(disease_data, Death ~ Origin)
+		} else {
+			post_hoc_res <- games_howell_test(disease_data, Death ~ Origin)
+		}
+		significant_pairs_df <- post_hoc_res %>% filter(p.adj < 0.05)
+		if (nrow(significant_pairs_df) > 0) {
+			significant_pairs <- paste(substr(significant_pairs_df$group1, 1, 30), "-", substr(significant_pairs_df$group2, 1, 30), collapse = "; ")
+		} else {
+			significant_pairs <- "Anlamlı ikili fark bulunamadı"
+		}
+	}
+	tibble(
+		hastalik_adi = disease_name, kullanilan_test = test_type, levene_p_degeri = round(levene_p, 4),
+		anova_p_degeri = round(anova_p, 4), anlamli_farklar = significant_pairs
+	)
+}
+# --- 3. OTOMASYON: FONKSİYONU TÜM HASTALIKLARA UYGULAMA ---
+disease_list <- unique(anova_input_data$`Cause of death`)
+final_results_table <- map_dfr(disease_list, ~run_single_disease_anova(disease_name = .x, data = anova_input_data))
+# --- 4. NİHAİ ÖZET TABLOSUNU GÖRÜNTÜLEME ---
+knitr::kable(final_results_table, caption = "Her Hastalık İçin Köken Grupları Arası Farklılıkların İstatistiksel Test Sonuçları")
+```
+
+**ANOVA Sonuçlarının Yorumlanması:**
+Yukarıdaki tablo, analiz edilen hemen hemen **tüm hastalıklar için `anova_p_degeri`'nin 0.05'ten küçük olduğunu** göstermektedir. Bu, etnik köken gruplarının ortalama ölüm oranları arasında istatistiksel olarak **çok anlamlı farklar olduğu** anlamına gelir. Yani, grafiklerde gözlemlediğimiz farklılıklar tesadüfi değildir. `anlamli_farklar` sütunu, hangi gruplar arasında spesifik olarak fark olduğunu gösterir. Örneğin, **Kalp Hastalıkları** için Siyah/Afro-Amerikan grubunun diğer tüm gruplardan anlamlı derecede daha yüksek ölüm oranlarına sahip olduğunu bu testler doğrulamaktadır.
+
+---
+
+# Sonuç ve Değerlendirme
+
+Bu analiz, 1999-2019 yılları arasında ABD'deki ölüm oranlarının etnik kökenle derinden ilişkili olduğunu hem görsel, hem korelasyonel hem de istatistiksel olarak ortaya koymuştur. Araştırmanın başında sorulan **"ölüm oranları, bireylerin etnik kökeni ve spesifik ölüm nedenleri arasında anlamlı bir ilişki var mıdır?"** sorusuna cevabımız kesin bir **evet**'tir.
+
+**Temel Bulgular:**
+
+1.  **Sistemik Eşitsizlikler:** Analizler boyunca "Siyah/Afro-Amerikan ancak Hispanik/Latino Değil" grubunun, Kalp Hastalıkları, Cinayet, HIV, Diyabet ve Serebrovasküler Hastalıklar gibi birçok önde gelen ölüm nedeninde sürekli olarak en yüksek ölüm oranlarına sahip olduğu görülmüştür. ANOVA testleri bu gözlemi istatistiksel olarak doğrulamıştır. Bu durum, CDC'nin de belirttiği gibi, sağlık hizmetlerine erişimdeki zorluklar, sosyoekonomik faktörler ve sistemik ırkçılık gibi daha derin sorunlara işaret etmektedir.
+
+2.  **Zıt Trendler:** HIV'e bağlı ölümlerdeki çarpıcı düşüş, hedefe yönelik ve etkili halk sağlığı müdahalelerinin hayat kurtarıcı potansiyelini göstermektedir. Buna karşılık, özellikle Beyaz ve Amerikan Yerlisi gruplarında olmak üzere Zehirlenme'ye bağlı ölümlerdeki dramatik artış (opioid krizi ile ilişkili) ve Alzheimer'daki durdurulamayan yükseliş, ülkenin karşı karşıya olduğu yeni ve büyüyen halk sağlığı krizlerini gözler önüne sermektedir.
+
+3.  **Paralel ve Ayrışan Yollar:** Korelasyon analizi, Kalp Hastalıkları gibi büyük kronik hastalıklardaki trendlerin (genellikle iyileşme yönünde) tüm grupları benzer şekilde etkilediğini göstermiştir. Bu, genel tıbbi gelişmelerin evrensel faydalarına işaret eder. Ancak Cinayet gibi sosyal belirleyicileri güçlü olan nedenlerde trendlerin ayrışması, farklı toplulukların farklı zorluklarla karşılaştığını doğrulamaktadır.
+
+Sonuç olarak, bu veri seti ABD'deki sağlık eşitsizliklerinin net bir resmini çizmektedir. Belirli hastalıklara karşı kazanılan başarılara rağmen, ırk ve etnik kökene dayalı farklılıklar varlığını güçlü bir şekilde sürdürmektedir. Bu bulgular, **halk sağlığı politikalarının tüm nüfusu eşit şekilde kapsayacak ve dezavantajlı grupların karşılaştığı özel zorlukları hedef alacak şekilde** tasarlanması gerektiğinin altını çizmektedir.
